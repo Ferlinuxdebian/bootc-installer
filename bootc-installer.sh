@@ -237,6 +237,8 @@ fi
 mount_dir="/var/tmp/bootc-mount-$$"
 mkdir -p "$mount_dir"
 
+# Usa o bootc install mount para montar a imagem bootc no diretório temporário
+# Depois injeta o fstab personalizado e desmonta
 if bootc install mount --sysroot /mnt --latest "$mount_dir" &>> bootc-installer.log; then
     cat << EOF > "$mount_dir/etc/fstab"
 UUID=${btrfs_uuid} / btrfs subvol=root,compress=zstd:1,ro 0 0
