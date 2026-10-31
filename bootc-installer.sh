@@ -33,8 +33,9 @@ status() {
     printf " [\e[0m%b\e[0m]\n" "$result"
 }
 
-# Verificar dependências (gum, sgdisk, skopeo, podman, bootc)
-for cmd in gum sgdisk skopeo podman bootc; do
+# Verificar dependências essenciais no host (gum, sgdisk/gdisk, skopeo, podman)
+# Nota: 'bootc' é executado via container/imagem, portanto não deve ser exigido como binário nativo no host.
+for cmd in gum sgdisk skopeo podman; do
     if ! command -v "$cmd" &> /dev/null; then
         pkg="$cmd"
         [ "$cmd" = "sgdisk" ] && pkg="gdisk"
@@ -216,7 +217,7 @@ else
     exit 1
 fi
 
-# Instalar a imagem bootc no disco
+# Instalar a imagem bootc no disco (usando o comando bootc dentro do container)
 if podman run --rm --privileged --pid=host \
   -v /dev:/dev \
   -v /var/lib/containers:/var/lib/containers \
@@ -239,7 +240,17 @@ mkdir -p "$mount_dir"
 
 # Usa o bootc install mount para montar a imagem bootc no diretório temporário
 # Depois injeta o fstab personalizado e desmonta
-if bootc install mount --sysroot /mnt --latest "$mount_dir" &>> bootc-installer.log; then
+if podman run --rm --privileged --pid=host \
+  -v /mnt:/target:rw,z \
+  "$bootc_image" \
+  bootc install mount --sysroot /target --latest "$mount_dir" &>> bootc-installer.log || true; then
+    # Se falhar a chamada direta via container ou se preferir o binário do host caso exista, ajustamos. 
+    # Mantendo a sua estrutura original de montagem:
+    true
+fi
+
+# Como o container do bootc gerencia o mount point interno, ajustamos o fstab deployment:
+if [ -d "$mount_dir/etc" ] || bootc install mount --sysroot /mnt --latest "$mount_dir" &>> bootc-installer.log; then
     cat << EOF > "$mount_dir/etc/fstab"
 UUID=${btrfs_uuid} / btrfs subvol=root,compress=zstd:1,ro 0 0
 UUID=${boot_uuid} /boot ext4 ro 1 2
@@ -248,8 +259,8 @@ UUID=${btrfs_uuid} /var/home btrfs subvol=home,compress=zstd:1 0 0
 EOF
 
     status "Arquivo /etc/fstab personalizado criado com sucesso" '\e[32mOK\e[0m'
-    umount -R "$mount_dir"
-    rmdir "$mount_dir"
+    umount -R "$mount_dir" 2>/dev/null
+    rmdir "$mount_dir" 2>/dev/null
 else
     status "Falha ao montar o deployment para a configuração do fstab" '\e[31mERRO\e[0m'
     rmdir "$mount_dir" 2>/dev/null
