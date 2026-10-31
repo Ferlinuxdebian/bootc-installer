@@ -33,16 +33,35 @@ status() {
     printf " [\e[0m%b\e[0m]\n" "$result"
 }
 
-# Verificar dependências essenciais no host (gum, sgdisk/gdisk, skopeo, podman)
-# Nota: 'bootc' é executado via container/imagem, portanto não deve ser exigido como binário nativo no host.
+# Verificar se tem conexão com a internet
+if ! ping -c 4 -W 2 google.com &> /dev/null; then
+    echo "Sem conexão com a internet. Por favor, verifique sua conexão e tente novamente."
+    exit 1
+fi
+
+# Verificar se os comandos necessários estão instalados
 for cmd in gum sgdisk skopeo podman; do
     if ! command -v "$cmd" &> /dev/null; then
         pkg="$cmd"
         [ "$cmd" = "sgdisk" ] && pkg="gdisk"
-        if gum confirm "Deseja instalar o '$pkg' agora? (necessário para o instalador)"; then
+        
+        echo "O pacote '$pkg' (comando '$cmd') não está instalado."
+        
+        # Usa o read padrão do bash para evitar dependência do gum na primeira instalação
+        read -p "Deseja instalar o '$pkg' agora? (S/n): " resposta
+        resposta=${resposta:-S} # Default para Sim se apenas apertar Enter
+        
+        if [[ "$resposta" =~ ^[SsYy]$ ]]; then
+            echo "Instalando $pkg..."
             dnf install "$pkg" -y &>> bootc-installer.log
+            
+            # Validação pós-instalação para garantir que deu certo
+            if ! command -v "$cmd" &> /dev/null; then
+                echo "Erro: Falha ao instalar o pacote '$pkg'. Verifique o arquivo bootc-installer.log."
+                exit 1
+            fi
         else
-            echo "O comando '$cmd' é obrigatório. Saindo."
+            echo "O comando '$cmd' é obrigatório para continuar. Saindo."
             exit 1
         fi
     fi
