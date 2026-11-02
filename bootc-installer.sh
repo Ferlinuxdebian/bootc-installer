@@ -40,7 +40,7 @@ if ! ping -c 4 -W 2 google.com &> /dev/null; then
 fi
 
 # Verificar se os comandos necessários estão instalados
-for cmd in gum sgdisk skopeo podman; do
+for cmd in gum sgdisk skopeo podman bootc; do
     if ! command -v "$cmd" &> /dev/null; then
         pkg="$cmd"
         [ "$cmd" = "sgdisk" ] && pkg="gdisk"
@@ -253,23 +253,12 @@ else
     exit 1
 fi
 
-# Configurar o /etc/fstab
+# Configurar o /etc/fstab, desmontar o temporário recursivamente e finalizar
 mount_dir="/var/tmp/bootc-mount-$$"
 mkdir -p "$mount_dir"
 
-# Usa o bootc install mount para montar a imagem bootc no diretório temporário
-# Depois injeta o fstab personalizado e desmonta
-if podman run --rm --privileged --pid=host \
-  -v /mnt:/target:rw,z \
-  "$bootc_image" \
-  bootc install mount --sysroot /target --latest "$mount_dir" &>> bootc-installer.log || true; then
-    # Se falhar a chamada direta via container ou se preferir o binário do host caso exista, ajustamos. 
-    # Mantendo a sua estrutura original de montagem:
-    true
-fi
-
-# Como o container do bootc gerencia o mount point interno, ajustamos o fstab deployment:
-if [ -d "$mount_dir/etc" ] || bootc install mount --sysroot /mnt --latest "$mount_dir" &>> bootc-installer.log; then
+# Usa o binário bootc do host para montar o deployment mais recente no diretório temporário
+if bootc install mount --sysroot /mnt --latest "$mount_dir" &>> bootc-installer.log; then
     cat << EOF > "$mount_dir/etc/fstab"
 UUID=${btrfs_uuid} / btrfs subvol=root,compress=zstd:1,ro 0 0
 UUID=${boot_uuid} /boot ext4 ro 1 2
@@ -278,10 +267,29 @@ UUID=${btrfs_uuid} /var/home btrfs subvol=home,compress=zstd:1 0 0
 EOF
 
     status "Arquivo /etc/fstab personalizado criado com sucesso" '\e[32mOK\e[0m'
-    umount -R "$mount_dir" 2>/dev/null
-    rmdir "$mount_dir" 2>/dev/null
+    
+    # Seguro usar -R aqui: /var/tmp é independente de /mnt e limpa todas as sub-montagens do bootc
+    umount -R "$mount_dir" &>> bootc-installer.log
+    rmdir "$mount_dir" &>> bootc-installer.log
 else
     status "Falha ao montar o deployment para a configuração do fstab" '\e[31mERRO\e[0m'
-    rmdir "$mount_dir" 2>/dev/null
+    rmdir "$mount_dir" &>> bootc-installer.log
+    exit 1
+fi
+
+# Executa o passo para finalizar a instalação no filesystem
+if bootc install finalize /mnt &>> bootc-installer.log; then
+    status "Instalação do bootc finalizada com sucesso" '\e[32mOK\e[0m'
+else
+    status "Falha ao executar o bootc install finalize" '\e[31mERRO\e[0m'
+    exit 1
+fi
+
+# Sincroniza os discos e desmonta toda a árvore de diretórios em /mnt por completo
+sync
+if umount -R /mnt &>> bootc-installer.log; then
+    status "Partições desmontadas com sucesso" '\e[32mOK\e[0m'
+else
+    status "Falha ao desmontar as partições em /mnt" '\e[31mERRO\e[0m'
     exit 1
 fi
